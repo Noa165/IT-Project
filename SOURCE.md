@@ -1,94 +1,150 @@
-# Data Source Proposals
+# Data Source – Traffic Jams and Traffic Alerts in Tel Aviv (Waze via the Tel Aviv Municipality)
 
-## Proposal 1: Weather – Forecast Against Reality (MET Norway and Ben Gurion Airport)
+## 1. The source
 
-**Description.** We want to check how accurate weather forecasts are for the Tel Aviv area.
-Every three hours we will save the forecast of the Norwegian Meteorological Institute (MET
-Norway, the service behind yr.no) for Ben Gurion Airport, and the real measurements of the
-airport's official weather station. Later we can compare what was forecast for a certain hour
-with what was measured, and check whether the forecast improves as that hour approaches.
-MET Norway publishes only its latest forecast, so earlier forecasts are lost if we do not save them.
+| | |
+|---|---|
+| **Name** | Tel Aviv Municipality GIS map service (IView2) – live Waze traffic layers |
+| **Address – jams (layer 892)** | <https://gisn.tel-aviv.gov.il/arcgis/rest/services/IView2/MapServer/892/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&geometryPrecision=5&f=json> |
+| **Address – alerts (layer 891)** | <https://gisn.tel-aviv.gov.il/arcgis/rest/services/IView2/MapServer/891/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&geometryPrecision=5&f=json> |
+| **Data format** | JSON (ArcGIS REST "query" response). We save both layers of one collection together in one JSON file: `{"jams": ..., "alerts": ...}` |
+| **Key / username** | Not required |
+| **License** | Public service of the Tel Aviv Municipality, open without registration; no `robots.txt` restrictions. We did not find a written license for these layers. The municipality's open-data policy encourages reuse. The data itself comes from Waze users |
+| **Collection frequency** | Every 30 minutes (the service is refreshed about every 10 minutes) |
 
-- **Content:** forecast – temperature, humidity, pressure, cloud cover, wind and
-  precipitation for about the next 10 days (every hour for the first 2–3 days, then every
-  6 hours); measurement – observations from the last 3 hours (time,
-  temperature, dew point, wind, pressure, clouds, current weather).
-- **URL:**
-  - Forecast: <https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=32.01&lon=34.89>
-  - Measurement: <https://aviationweather.gov/api/data/metar?ids=LLBG&format=json&hours=3>
-- **Update frequency:** MET Norway updates its forecast for Israel about every 6 hours; the
-  station reports about every 30 minutes. We will sample both every 3 hours (not at XX:00, as
-  MET Norway asks).
-- **Expected sample size:** about 40 KB + 3 KB per sample (about 25 MB for the semester).
-- **API key or password:** not required (MET Norway only asks for a `User-Agent` header).
-- **Terms and limitations:** both sources are free public services made for automated access
-  (MET Norway's terms only ask for the `User-Agent` header and limited request frequency; the
-  measurement comes from the US Aviation Weather Center's public data API). The station
-  reports rain only as yes/no (no millimeters), and it is about 13 km from central Tel Aviv, so
-  the forecast is requested for the airport itself. We will use `obsTime` (the real observation
-  time), because `reportTime` is rounded.
-- **Data sample** (shortened from real responses we downloaded on 2026-11-08):
+## 2. What we collect
 
-Forecast – first forecast hour:
+Once automatic collection starts (`collect.sh` with `cron`), every 30 minutes we will save two
+lists from the same moment. Our first 4 samples were collected manually, one per day.
 
-```json
-{"geometry": {"type": "Point", "coordinates": [34.89, 32.01, 41]},
- "properties": {"meta": {"updated_at": "2026-11-08T17:29:51Z"},
-  "timeseries": [{"time": "2026-11-08T18:00:00Z",
-    "data": {"instant": {"details": {"air_pressure_at_sea_level": 1022.6, "air_temperature": 14.8,
-      "cloud_area_fraction": 25.8, "relative_humidity": 97.2, "wind_from_direction": 137.7,
-      "wind_speed": 2.3}},
-      "next_1_hours": {"summary": {"symbol_code": "fair_night"},
-        "details": {"precipitation_amount": 0.0}}}}]}}
-```
+- **Jams (layer 892):** every traffic jam Waze currently reports in Tel Aviv and nearby cities
+  (Ramat Gan, Bnei Brak, Givatayim, Holon, Ramat HaSharon). For each jam: street, the street
+  where it ends, jam level, speed, length, delay and the line of the jam on the map. In our 4
+  manual samples there were between 131 and 196 jams.
+- **Alerts (layer 891):** every report Waze users currently show on the map: accidents,
+  hazards, road closures and jam reports, with a location point. In our 4 manual samples there
+  were between 88 and 126 alerts (e.g. on 2026-11-16: 4 accidents, 14 hazards, 52 road closures,
+  56 jam reports).
 
-Measurement – latest observation (the response had 6 observations from the last 3 hours):
+The jams tell us **where** the traffic is heavy; the alerts help explain **why** (an accident,
+a hazard or a closure nearby). Neither list is archived anywhere: when a jam or an alert ends,
+it disappears from the service.
 
-```json
-[{"icaoId": "LLBG", "obsTime": 1794163800, "reportTime": "2026-11-08T19:00:00.000Z",
-  "temp": 17, "dewp": 12, "wdir": 40, "wspd": 4, "altim": 1022, "cover": "FEW",
-  "rawOb": "METAR LLBG 081850Z 04004KT 9999 FEW050 17/12 Q1022 NOSIG"}]
-```
+## 3. The schema (`data/dataset.csv`)
 
-## Proposal 2: Traffic Jams in Tel Aviv – Live Waze Data (Tel Aviv Municipality GIS)
+All samples are combined into one CSV file. **Each row is one jam or one alert, in one sample.**
+The column `record_type` says which one; columns that do not apply to that type are left empty.
+All times are in UTC (ISO 8601, e.g. `2026-11-16T13:12:00Z`).
 
-**Description.** The Tel Aviv Municipality publishes live traffic data from Waze on its public
-map service: every current traffic jam in Tel Aviv and nearby cities, with its street, level,
-speed and delay. We want to find which streets are most congested, at what hours and days,
-and whether rain makes traffic worse. The service shows only current jams; when a jam clears
-it disappears and no history is published, so the data is lost if we do not save it.
+| # | Column | Meaning | Unit / values | Jam | Alert |
+|---|---|---|---|---|---|
+| 1 | `sample_time_utc` | When we collected the sample (taken from the file path `raw/YYYY-mm-dd/HHMM.json`) | UTC time | ✓ | ✓ |
+| 2 | `record_type` | Type of row | `jam` / `alert` | ✓ | ✓ |
+| 3 | `waze_id` | Waze's ID of the jam or alert; stays the same across samples, so we can follow it over time | text | ✓ | ✓ |
+| 4 | `alert_type` | Kind of alert | `ACCIDENT`, `HAZARD`, `ROAD_CLOSED`, `JAM` | | ✓ |
+| 5 | `alert_subtype` | More detail on the alert (often empty) | e.g. `ACCIDENT_MAJOR`, `HAZARD_ON_ROAD_LANE_CLOSED`, `JAM_STAND_STILL_TRAFFIC` | | ✓ |
+| 6 | `city` | City | text (Hebrew) | ✓ | ✓ |
+| 7 | `street` | Street (sometimes empty) | text (Hebrew) | ✓ | ✓ |
+| 8 | `end_street` | The street where the jam ends (often empty) | text (Hebrew) | ✓ | |
+| 9 | `road_type` | Waze road type code | number (e.g. 1 = street, 2 = main street, 3 = highway) | ✓ | ✓ |
+| 10 | `jam_level` | How heavy the jam is | 0 (free flow) – 5 (standstill / blocked) | ✓ | |
+| 11 | `speed_kmh` | Average speed in the jam | km/h | ✓ | |
+| 12 | `length_m` | Length of the jam | meters | ✓ | |
+| 13 | `delay_sec` | Extra time compared to free flow | seconds; `-1` = road blocked | ✓ | |
+| 14 | `reliability` | How reliable Waze considers the alert | 0–10 | | ✓ |
+| 15 | `confidence` | How strongly other users confirmed the alert | 0–10 (0–5 in our sample) | | ✓ |
+| 16 | `report_rating` | Waze rank of the reporting user | number (0–5 in our sample) | | ✓ |
+| 17 | `direction_deg` | Direction of travel of the reporting user | degrees, 0–359 | | ✓ |
+| 18 | `lat` | Latitude – the alert point, or the start of the jam | degrees (WGS84), 5 decimals | ✓ | ✓ |
+| 19 | `lon` | Longitude – the alert point, or the start of the jam | degrees (WGS84), 5 decimals | ✓ | ✓ |
+| 20 | `end_lat` | Latitude of the end of the jam | degrees (WGS84) | ✓ | |
+| 21 | `end_lon` | Longitude of the end of the jam | degrees (WGS84) | ✓ | |
+| 22 | `first_reported_utc` | When Waze first reported the jam or alert | UTC time | ✓ | ✓ |
+| 23 | `updated_utc` | When the service last updated the record (converted to real UTC, see below) | UTC time | ✓ | ✓ |
 
-- **Content:** for each jam: city, street, end street, level (0–5), speed (km/h), length (m),
-  delay (seconds), road type, jam ID, first report time and last update time.
-- **URL:** <https://gisn.tel-aviv.gov.il/arcgis/rest/services/IView2/MapServer/892/query?where=1%3D1&outFields=city,street,endNode,level,speedKMH,length,delay,roadType,uuid,pubMillis,updateDate&returnGeometry=false&f=json>
-- **Update frequency:** about every 10 minutes. We will sample every 30 minutes.
-- **Expected sample size:** about 20–30 KB per sample (about 80 records in the evening), roughly
-  70–100 MB for the semester before compression, and much less when compressed.
-- **API key or password:** not required.
-- **Terms and limitations:** a public municipal service with no registration. The data comes
-  from Waze users, so quiet streets may be missing. Many records with level 5, speed 0 and
-  delay -1 are long-term road closures (reported weeks ago), not regular jams, so we will
-  analyse them separately. The time fields are in Israel time written as if they were UTC (about 2 hours ahead),
-  so we will convert them to real UTC.
-  Rain data will come from a weather source we connect in week 7.
-- **Data sample** (shortened from a real response we downloaded on 2026-11-08; 2 of about 80
-  records – a regular jam and a road closure):
+**Time zones.** In all 4 samples, `pubMillis` is real UTC (e.g. the newest jam was reported at
+13:12 UTC, just before we collected at 13:12 UTC), but `updateDate` is Israel time written as if it
+were UTC (in the same sample it showed 15:13). We therefore subtract 2 hours from `updateDate` (Israel winter time; the
+semester ends before summer time starts at the end of March).
 
-```json
-{"features": [
-  {"attributes": {"city": "תל אביב - יפו", "street": "מיטב", "endNode": "קרמניצקי",
-    "level": 2, "speedKMH": 3.57, "length": 222, "delay": 112, "roadType": 1,
-    "uuid": "1278365732", "pubMillis": "1794163627211", "updateDate": 1794171183520}},
-  {"attributes": {"city": "תל אביב - יפו", "street": "אלנבי", "endNode": "רוטשילד",
-    "level": 5, "speedKMH": 0, "length": 88, "delay": -1, "roadType": 2,
-    "uuid": "1146601566", "pubMillis": "1790772429253", "updateDate": 1794171183517}}]}
-```
+## 4. Why these columns
 
-## Ranking
+- **We kept** everything needed to answer our questions: where and how heavy the jams are
+  (street, level, speed, delay, length, location), why they happen (alert type and subtype, and
+  the alert's location so we can find alerts near a jam), and when (sample time, first report
+  time). `waze_id` lets us follow the same jam or closure across samples and measure how long it
+  lasts. `reliability` and `confidence` let us ignore weak alerts.
+- **One table for both jams and alerts** keeps the dataset in a single CSV, as the project
+  requires, and keeps a jam and the alerts of the same moment together by `sample_time_utc`.
+- **Long-term closures:** in all 4 samples every jam with level 5 (49–52 per sample) had speed 0
+  and delay `-1`, and many were first reported weeks ago (the oldest on 2026-09-30); 34 of the
+  52 closures from 2026-11-16 were still there, with the same `uuid`, on 2026-11-19. These are road closures, not
+  regular jams. We keep them, and will separate them in the analysis using `delay_sec = -1` and
+  `first_reported_utc`.
+- **We did not keep:**
+  - `OBJECTID` – an internal row number of the map service that changes on every refresh (the
+    same closure had a different `OBJECTID` on each day), so it cannot identify a jam; `uuid` can.
+  - `country` – always `IL`.
+  - `turnType` – always `NONE`; jam `type` – always empty.
+  - `SHAPE_Length` – the same as `length` (only more decimals).
+  - `nThumbsUp` – always 0; `reportByMunicipalityUser` – always `false`.
+  - The full line of each jam (2–149 points, about 12 on average) – we keep only its start and
+    end points, which is enough to find nearby alerts and events. The full line stays in `raw/`.
+  - Response metadata (`fields`, `fieldAliases`, `displayFieldName`, `geometryType`,
+    `spatialReference`) – the same in every sample.
 
-1. **Weather – Forecast Against Reality** (our first choice)
-2. **Traffic Jams in Tel Aviv – Live Waze Data**
+## 5. Field name translation (source → schema)
 
-We prefer the weather proposal because it compares a forecast with a real measurement, which
-gives the clearest findings, and every sample contains data. The traffic proposal is local and
-changes often, but at night there are few jams and the data depends on Waze users.
+| Source layer | Source field | Schema column |
+|---|---|---|
+| file path | `raw/YYYY-mm-dd/HHMM.json` | `sample_time_utc` |
+| – | which list the record is in (`jams` / `alerts`) | `record_type` |
+| both | `uuid` | `waze_id` |
+| 891 | `type` | `alert_type` |
+| 891 | `subtype` | `alert_subtype` |
+| both | `city` | `city` |
+| both | `street` | `street` |
+| 892 | `endNode` | `end_street` |
+| both | `roadType` | `road_type` |
+| 892 | `level` | `jam_level` |
+| 892 | `speedKMH` | `speed_kmh` |
+| 892 | `length` | `length_m` |
+| 892 | `delay` | `delay_sec` |
+| 891 | `reliability` | `reliability` |
+| 891 | `confidence` | `confidence` |
+| 891 | `reportRating` | `report_rating` |
+| 891 | `magvar` | `direction_deg` |
+| 891 | `geometry.y` | `lat` |
+| 891 | `geometry.x` | `lon` |
+| 892 | `geometry.paths` – first point (y, x) | `lat`, `lon` |
+| 892 | `geometry.paths` – last point (y, x) | `end_lat`, `end_lon` |
+| both | `pubMillis` (milliseconds, UTC) | `first_reported_utc` |
+| both | `updateDate` (milliseconds, Israel time) | `updated_utc` (minus 2 hours) |
+| both | `OBJECTID`, `country` | not kept |
+| 892 | `turnType`, `type`, `SHAPE_Length` | not kept |
+| 891 | `nThumbsUp`, `reportByMunicipalityUser` | not kept |
+
+## 6. Expected size after one semester
+
+Based on our 4 manual samples (morning, noon and evening, 2026-11-16 to 2026-11-19: on average
+about 150 jams and 110 alerts per sample), and assuming about 10 weeks of collection (70 days)
+every 30 minutes = 48 samples a day = about 3,360 samples:
+
+| | Per sample (average) | Semester |
+|---|---|---|
+| `raw/` – uncompressed | about 135 KB | about 450 MB – too close to the 500 MB limit |
+| `raw/` – compressed with `gzip` | about 26 KB | **about 90 MB** |
+| `data/dataset.csv` | about 260 rows, about 57 KB | **about 900,000 rows, about 190 MB** |
+
+We will therefore compress every raw file with `gzip` in `collect.sh` (as the project rules
+allow), and `normalise.sh` will read the compressed files. Raw plus dataset come to about 280 MB,
+under the 500 MB limit. Our samples were all taken during the day; at night there are fewer jams,
+so the real numbers will probably be a little lower. If space runs short, we can lower the
+collection frequency to once an hour.
+
+**Note on our first sample.** The first manual sample (`raw/2026-11-16/1312.json`) is about
+407 KB, three times larger than the others. When we combined the two layers with `jq`, it wrote
+the JSON "pretty-printed", with spaces and line breaks. From the second sample on we use `jq -c`
+(compact output) and `geometryPrecision=5` for the alerts as well. The content is the same, and
+`normalise.sh` reads both formats. We did not change the first file, because files in `raw/` must
+not be edited.
